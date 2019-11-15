@@ -1,6 +1,7 @@
 -module(router).
 -export([start/1]).
 
+
 start (RouterName) ->
    spawn(fun() -> init(RouterName) end).
 
@@ -46,20 +47,18 @@ handleMessage (RouterName, RoutingTable, Dest, _, Pid, Trace) ->
          end
    end.
 
-
+handleControl (RouterName, RoutingTable, From, Pid, 0, ControlFun) ->
+   %% init
+   Children = ControlFun(RouterName, RoutingTable),
+   io:format("Children: ~p~n", [Children]),
+   if Children == abort ->
+         body;
+      true ->
+         body
+   end;
 handleControl (RouterName, RoutingTable, From, Pid, SeqNum, ControlFun) ->
-   if SeqNum == 0 -> %% init
-      Children = ControlFun(RouterName, RoutingTable),
-      io:format("Children: ~p~n", [Children]),
-      if Children == abort ->
-            body;
-         true ->
-            body
-      end;
-   true ->
-      %% not init
-      body
-   end.
+   %% not init
+   body.
 
 
 handleDump (RoutingTable, From) ->

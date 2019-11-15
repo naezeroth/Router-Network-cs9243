@@ -1,14 +1,6 @@
 -module(control).
--export([graphToNetwork/1, extendNetwork/4, sng/0]).
+-export([graphToNetwork/1, extendNetwork/4]).
 
-sng () ->
-  [{red  , [{white, [white, green]},
-	    {blue , [blue]}]},
-   {white, [{red, [blue]},
-	    {blue, [green, red]}]},
-   {blue , [{green, [white, green, red]}]},
-   {green, [{red, [red, blue, white]}]}
-  ].
 
 graphToNetwork(Graph) ->
    Routers = ets:new(undef, [private]),
@@ -21,6 +13,7 @@ graphToNetwork(Graph) ->
    io:format("Routers ~p~n", [ets:match(Routers, '$1')]),
    ets:delete(InboundCount),
    ets:delete(Routers).
+
 
 initRouters(Graph, Routers, InboundCount) ->
    lists:foreach(
@@ -35,6 +28,7 @@ initRouters(Graph, Routers, InboundCount) ->
                ets:insert(Table, {'$NoInEdges', Inbound})
             end}
       end, Graph).
+
 
 spawnRouters(Graph, InboundCount, Routers) ->
    lists:foreach(
@@ -52,9 +46,9 @@ countDirect(Edges, InboundCount) ->
          {Hop, _} = Edge,
          Inbound = ets:lookup(InboundCount, Hop),
          if Inbound == [] -> ets:insert(InboundCount, {Hop, 1});
-         true ->
-            [{_, N}] = Inbound, % list of tuples returned
-            ets:insert(InboundCount, {Hop, N + 1})
+            true ->
+               [{_, N}] = Inbound, % list of tuples returned
+               ets:insert(InboundCount, {Hop, N + 1})
          end
       end, Edges).
 
