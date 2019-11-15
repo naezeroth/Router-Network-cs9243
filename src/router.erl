@@ -19,11 +19,13 @@ loop (RouterName, RoutingTable, OtherTable) ->
       {message, Dest, From, Pid, Trace} ->
          handleMessage(RouterName, RoutingTable, Dest, From, Pid, Trace),
          loop(RouterName, RoutingTable, OtherTable);
-      {control, From, Pid, SeqNum, ControlFun} ->
-         NewRoutingTable = handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun, coordinator),
-         loop(RouterName, NewRoutingTable, OtherTable);
-      {control, From, Pid, SeqNum, ControlFun, slave} ->
-         NewRoutingTable = handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun, slave),
+      {control, From, Pid, SeqNum, ControlFun} -> % From == Pid => from controller
+         case From == Pid of
+            true ->
+               NewRoutingTable = handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun, coordinator);
+            false ->
+               NewRoutingTable = handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun, slave)
+         end,
          loop(RouterName, NewRoutingTable, OtherTable);
       {dump, From} ->
          handleDump(RoutingTable, From),
@@ -40,17 +42,19 @@ loop (RouterName, RoutingTable, OtherTable) ->
 % % % % %
 handleMessage(RouterName, RoutingTable, Dest, _, Pid, Trace) ->
    NextTrace = [RouterName|Trace],
-   if Dest == RouterName ->
-      Pid ! {trace, self(), lists:reverse(NextTrace)};
-   true ->
-      Next = ets:lookup(RoutingTable, Dest),
-      if Next /= [] ->
-         [{_, Next_Pid}] = Next,
-         Next_Pid ! {message, Dest, self(), Pid, NextTrace};
+   case Dest == RouterName of
       true ->
-         %% Bad things have happened...
-         io:format("Router ~p has received a message to ~p it can't route~n", [RouterName, Dest])
-      end
+         Pid ! {trace, self(), lists:reverse(NextTrace)};
+      false ->
+         Next = ets:lookup(RoutingTable, Dest),
+         case Next /= [] of
+            true ->
+               [{_, Next_Pid}] = Next,
+               Next_Pid ! {message, Dest, self(), Pid, NextTrace};
+            false ->
+               %% Bad things have happened...
+               io:format("Router ~p has received a message to ~p it can't route~n", [RouterName, Dest])
+         end
    end.
 
 
@@ -60,12 +64,13 @@ handleControl(RouterName, RoutingTable, OtherTable, _, _, 0, ControlFun, _) ->
    ets:insert(OtherTable, {executed, 0}),
    RoutingTable;
 handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun, coordinator) ->
-   % not init, coordinator of control
+   % not init, coordinator of 2 phase commit
    [{_, Executed}] = ets:lookup(OtherTable, executed),
    Guard = lists:member(SeqNum, Executed),
-   if Guard == true ->
-         RoutingTable;  % Sequence number already executed
+   case Guard of
       true ->
+         RoutingTable;  % Sequence number already executed
+      false ->
          ets:insert(OtherTable, {executed, [SeqNum|Guard]}),
          TentativeRoutingTable = ets:new(undef,[private]),
          % ets:match returns a a list of lists or tuples, we flatten it to get a list of tuples
@@ -79,11 +84,33 @@ handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFu
                From ! {abort, self(), SeqNum}, % ControlFun has failed somewhere so report abort
                ets:delete(TentativeRoutingTable),
                RoutingTable;
-            Children ->
-               broadcast2PhaseCommit(RoutingTable, {control, self(), Pid, SeqNum, ControlFun, slave}),
-               coordinate2PhaseCommit(RoutingTable, TentativeRoutingTable, SeqNum),
-               % Loop as coordinator
-               Children
+            Children ->  % Will also capture empty list, in which case foreach does nothing later
+               broadcast2PhaseCommit(RoutingTable, {control, self(), Pid, SeqNum, ControlFun}),
+               FirstPhaseResponse = coordinateFirstPhase(RoutingTable, SeqNum),
+               case FirstPhaseResponse of
+                  X when X =:= timeout; X =:= phase1abort ->
+                     lists:foreach(
+                        fun(C) ->
+                           exit(C, "commit aborted")
+                        end, Children),
+                     ets:delete(TentativeRoutingTable),
+                     From ! {abort, self(), SeqNum},
+                     RoutingTable;
+                  phase1Good ->
+                     ets:delete(RoutingTable),
+                     From ! {commited, self(), SeqNum},
+                     TentativeRoutingTable;
+                  _ ->
+                     io:format("~n~nVery NOK~n"),
+                     io:format("Phase 1 response is ~p~n", [FirstPhaseResponse]),
+                     lists:foreach(
+                        fun(C) ->
+                           exit(C, "commit aborted")
+                        end, Children),
+                     ets:delete(TentativeRoutingTable),
+                     From ! {abort, self(), SeqNum},
+                     RoutingTable
+               end
          catch
             _:_ ->  % ... Should catch everything
                From ! {abort, self(), SeqNum},
@@ -92,8 +119,59 @@ handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFu
          end
    end;
 handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun, slave) ->
-   % not init, slave of control
-   ok.
+   % not init, slave of 2 phase commit
+   [{_, Executed}] = ets:lookup(OtherTable, executed),
+   Guard = lists:member(SeqNum, Executed),
+   if Guard == true ->
+      RoutingTable;  % Sequence number already executed
+   true ->
+      ets:insert(OtherTable, {executed, [SeqNum|Guard]}),
+      TentativeRoutingTable = ets:new(undef,[private]),
+      % ets:match returns a a list of lists or tuples, we flatten it to get a list of tuples
+      % which we can insert in one go
+      % Dump = lists:flatten(ets:match(RoutingTable, '$1')),
+      Dump = ets:match(RoutingTable, '$1'),
+      io:format("If this fails... We know why *** ~p ***~n", [Dump]),
+      ets:insert(TentativeRoutingTable, Dump),
+      try ControlFun(RouterName, TentativeRoutingTable) of
+         abort ->
+            signalAbort, % ControlFun has failed somewhere so report inform coordinator abort
+            ets:delete(TentativeRoutingTable),
+            RoutingTable;
+         Children ->  % Will also capture empty list, in which case foreach does nothing later
+            broadcast2PhaseCommit(RoutingTable, {control, self(), Pid, SeqNum, ControlFun, slave}),
+            signalCommit,
+            FirstPhaseResponse = coordinateFirstPhase(RoutingTable, SeqNum),
+            if FirstPhaseResponse == timeout orelse FirstPhaseResponse == phase1abort ->
+               lists:foreach(
+                  fun(C) ->
+                     exit(C, "commit aborted")
+                  end, Children),
+               ets:delete(TentativeRoutingTable),
+               From ! {abort, self(), SeqNum},
+               RoutingTable;
+            FirstPhaseResponse == phase1Good ->
+               ets:delete(RoutingTable),
+               From ! {commited, self(), SeqNum},
+               TentativeRoutingTable;
+            true ->
+               io:format("~n~nVery NOK~n"),
+               io:format("Phase 1 response is ~p~n", [FirstPhaseResponse]),
+               lists:foreach(
+                  fun(C) ->
+                     exit(C, "commit aborted")
+                  end, Children),
+               ets:delete(TentativeRoutingTable),
+               From ! {abort, self(), SeqNum},
+               RoutingTable
+            end
+      catch
+         _:_ ->  % ... Should catch everything
+            From ! {abort, self(), SeqNum},
+            ets:delete(TentativeRoutingTable),
+            RoutingTable
+      end
+   end.
 
 
 handleDump(RoutingTable, From) ->
@@ -120,30 +198,36 @@ broadcast2PhaseCommit(RoutingTable, Msg) ->
    Hops = [Hop || [{Dest, Hop}] <- ets:match(RoutingTable, '$1'), Dest /= '$NoInEdges'],
    lists:foreach(fun(Hop) -> Hop ! Msg end, Hops).
 
-coordinate2PhaseCommit(RoutingTable, TentativeRoutingTable, SeqNum) ->
+
+coordinateFirstPhase(RoutingTable, SeqNum) ->
    NetworkSize = length(ets:match(RoutingTable, '$1')) - 1, % filter $NoInEdges from count
    Phase1Result = awaitPhase1Responses(NetworkSize, 0, SeqNum),
-   ok.
+   case Phase1Result of
+      phase1Good ->
+         phase1Good;
+      phase1abort ->
+         phase1abort;
+      timeout ->
+         timeout;
+      X ->
+         io:format("2PhaseCommit Coordinator received odd message -> ~p~n", [X])
+   end.
+
 
 awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum) ->
    receive
       {twoPhaseCommit, yepSoundsGood, CommitSeq} ->
          if CommitSeq == SeqNum ->
-            if CurrentResponses + 1 == ExpectedResponses ->
-               phase1Good;
-            true ->
-               awaitPhase1Responses(ExpectedResponses, CurrentResponses + 1, SeqNum)
+            if CurrentResponses + 1 == ExpectedResponses -> phase1Good;
+            true -> awaitPhase1Responses(ExpectedResponses, CurrentResponses + 1, SeqNum)
             end;
-         true ->
-               awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum)
+         true -> awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum)
          end;
       {twoPhaseCommit, ohGodNoNoNo, CommitSeq} ->
-         if CommitSeq == SeqNum ->
-            phase1Abort;
-         true ->
-            awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum)
+         if CommitSeq == SeqNum -> phase1abort;
+         true -> awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum)
          end
-   after 5000 ->
+   after 5000 -> % From spec, don't change this
          timeout
    end.
 % % % % %

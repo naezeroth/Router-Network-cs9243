@@ -51,8 +51,10 @@ countDirect(Edges, InboundCount) ->
       fun(Edge) ->
          {Hop, _} = Edge,
          Inbound = ets:lookup(InboundCount, Hop),
-         if Inbound == [] -> ets:insert(InboundCount, {Hop, 1});
+         case Inbound == [] of 
             true ->
+               ets:insert(InboundCount, {Hop, 1});
+            false ->
                [{_, N}] = Inbound, % list of tuples returned
                ets:insert(InboundCount, {Hop, N + 1})
          end
