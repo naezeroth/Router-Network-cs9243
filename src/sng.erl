@@ -3,9 +3,9 @@
 
 sng () ->
   [{red, [{white, [white, green]},
-	    {blue, [blue]}]},
+	        {blue, [blue]}]},
    {white, [{red, [blue]},
-	    {blue, [green, red]}]},
+	          {blue, [green, red]}]},
    {blue, [{green, [white, green, red]}]},
    {green, [{red, [red, blue, white]}]}
   ].
