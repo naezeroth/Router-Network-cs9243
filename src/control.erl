@@ -9,14 +9,14 @@ graphToNetwork(Graph) ->
    spawnRouters(Graph, InboundCount, Routers),
    % At this point every router should exist and we can send init messages
    initRouters(Graph, Routers, InboundCount),
-   io:format("Inbound ~p~n", [ets:match(InboundCount, '$1')]),
-   io:format("Routers ~p~n", [ets:match(Routers, '$1')]),
+   % io:format("Inbound ~p~n", [ets:match(InboundCount, '$1')]),
+   % io:format("Routers ~p~n", [ets:match(Routers, '$1')]),
    [FirstRouter|_] = Graph,
    {RootNode,_} = FirstRouter,
    [{_, RootPid}] = ets:lookup(Routers, RootNode),
    ets:delete(InboundCount),
    ets:delete(Routers),
-   io:format("~n~n~n"),
+   % io:format("~n~n~n"),
    RootPid.
 
 
@@ -33,9 +33,9 @@ spawnRouters(Graph, InboundCount, Routers) ->
 initRouters(Graph, Routers, InboundCount) ->
    lists:foreach(
       fun({RouterName, Edges}) ->
-         io:format("Router ~p has edges ~p~n", [RouterName, Edges]),
+         % io:format("Router ~p has edges ~p~n", [RouterName, Edges]),
          Routes = mapRoutes(Edges, Routers, [], byName),
-         io:format("Routes: ~p ~n", [Routes]),
+         % io:format("Routes: ~p ~n", [Routes]),
          [{_, Inbound}] = ets:lookup(InboundCount, RouterName),
          [{_, Pid}] = ets:lookup(Routers, RouterName),
          Pid ! {control, self(), self(), 0,
