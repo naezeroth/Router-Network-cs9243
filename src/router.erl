@@ -200,7 +200,11 @@ start2PC(RouterName, RoutingTable, TentativeRoutingTable, From, Pid, SeqNum, Con
 broadcast(RoutingTable, Msg) ->
    % We need to filter out the NoInEdges which is stored here... Luckily the atom is knowm :)
    Hops = [Hop || [{Dest, Hop}] <- ets:match(RoutingTable, '$1'), Dest =/= '$NoInEdges'],
-   lists:foreach(fun(Hop) -> Hop ! Msg end, Hops).
+   Unique = lists:usort(Hops), % usort will return a unique list, since every node will broadcast we only need to send a message once to each node
+   lists:foreach(fun(Hop) ->
+      io:format("~nSending ~p to ~p~n", [Msg, Hop]),
+       Hop ! Msg
+       end, Unique).
 
 
 twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail) ->
@@ -238,16 +242,7 @@ twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail) ->
                mustAbort;
             _ ->
                twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail)
-         end;
-      {control, _, _, CommitSeq, _} ->
-         case CommitSeq of
-               SeqNum -> ignored;
-               _ -> io:format("Received SeqNum ~p while waiting for ~p~n", [CommitSeq, SeqNum])
-            end,
-            twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail);
-      X ->
-         io:format("~n~n   2pc participant received unhandled message ~p~n", [X]),
-         twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail)
+         end
    after getTimeout() -> timeout
    end.
 
