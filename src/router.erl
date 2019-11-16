@@ -2,6 +2,9 @@
 -export([start/1]).
 
 
+debug() -> nope. % 'debug' for debug mode, else anything
+
+
 start (RouterName) ->
    spawn(fun() -> init(RouterName) end).
 
@@ -30,7 +33,7 @@ loop (RouterName, RoutingTable, OtherTable) ->
       {'2pcPhase2', _, _} -> % Swallow up any extra 2pc messages
          loop(RouterName, RoutingTable, OtherTable);
       X ->
-         io:format("~p: Main loop swallowed message => ~p~n", [RouterName, X]),
+         case debug() of debug -> io:format("~p: Main loop swallowed message => ~p~n", [RouterName, X]); _ -> ignore end,
          loop(RouterName, RoutingTable, OtherTable)
    end.
 
@@ -40,13 +43,14 @@ loop (RouterName, RoutingTable, OtherTable) ->
 % % % % %
 handleDump(RoutingTable, From) ->
    Dump = ets:match(RoutingTable, '$1'),
+case debug() of debug -> io:format("Taking a dump ~p~n", [Dump]); _ -> ignore end,
    From ! {table, self(), Dump}.
 
 
 handleStop(RouterName, RoutingTable, OtherTable) ->
+   case debug() of debug -> io:format("Stopping router: ~p~n", [RouterName]); _ -> ignore end,
    ets:delete(RoutingTable),
-   ets:delete(OtherTable),
-   io:format("Stopping router: ~p~n", [RouterName]).
+   ets:delete(OtherTable).
 
 
 handleMessage(RouterName, RoutingTable, Dest, _, Pid, Trace) ->
@@ -59,7 +63,7 @@ handleMessage(RouterName, RoutingTable, Dest, _, Pid, Trace) ->
          case Next of
             [] ->
                %% Bad things have happened...
-               io:format("Router ~p has received a message to ~p it can't route~n", [RouterName, Dest]);
+            case debug() of debug -> io:format("Router ~p has received a message to ~p it can't route~n", [RouterName, Dest]); _ -> ignore end;
             _ ->
                [{_, Next_Pid}] = Next,
                Next_Pid ! {message, Dest, self(), Pid, NextTrace}
@@ -96,13 +100,13 @@ start2PC(RouterName, RoutingTable, TentativeRoutingTable, Pid, Pid, SeqNum, Cont
    try ControlFun(RouterName, TentativeRoutingTable) of
       abort ->
          % We already know we're going to abort, but first we coordinate phase 1 so that everyone is on the same page...Efficiency third
-         io:format("~n~n      ~p: abort from ControlFun~n~n", [RouterName]),
+         case debug() of debug -> io:format("~n~n      ~p: abort from ControlFun~n~n", [RouterName]); _ -> ignore end,
          _ = coordinateFirstPhase(RoutingTable, SeqNum),
          broadcast(RoutingTable, {'2pcPhase2', mustAbort, SeqNum}),
          Phase2Response = coordinateSecondPhase(RoutingTable, SeqNum, confirmAbort),
          case Phase2Response of
             phase2Good -> ignore;
-            timeout -> io:foramt("Phase 2 timed out for coordinator~n")
+            timeout -> case debug() of debug -> io:format("Phase 2 timed out for coordinator~n"); _ -> ignore end
          end,
          Pid ! {abort, self(), SeqNum},
          ets:delete(TentativeRoutingTable),
@@ -110,33 +114,26 @@ start2PC(RouterName, RoutingTable, TentativeRoutingTable, Pid, Pid, SeqNum, Cont
       Children ->  % Will also capture empty list, in which case foreach does nothing later
          Phase1Response = coordinateFirstPhase(RoutingTable, SeqNum),
          case Phase1Response of
-            phase1Commit ->  io:format("~n~n      ~p: Signaling to network canCommit~n~n", [RouterName]),
+            phase1Commit ->  case debug() of debug -> io:format("~n~n      ~p: Signaling to network canCommit~n~n", [RouterName]); _ -> ignore end,
                broadcast(RoutingTable, {'2pcPhase2', canCommit, SeqNum}),
                Phase2Response = coordinateSecondPhase(RoutingTable, SeqNum, confirmCommit),
                case Phase2Response of
                   phase2Good -> ignore;
-                  timeout -> io:foramt("Phase 2 timed out for coordinator~n")
+                  timeout -> case debug() of debug -> io:format("Phase 2 timed out for coordinator~n"); _ -> ignore end
                end,
                ets:delete(RoutingTable),
                Pid ! {committed, self(), SeqNum},
                TentativeRoutingTable;
-            X when X =:= timeout; X =:= phase1Abort -> io:format("~n~n      ~p: Signalling network mustAbort~n~n", [RouterName]),
+            X when X =:= timeout; X =:= phase1Abort -> case debug() of debug -> io:format("~n~n      ~p: Signalling network mustAbort~n~n", [RouterName]); _ -> ignore end,
                broadcast(RoutingTable, {'2pcPhase2', mustAbort, SeqNum}),
                Phase2Response = coordinateSecondPhase(RoutingTable, SeqNum, confirmAbort),
                case Phase2Response of
                   phase2Good -> ignore;
-                  timeout -> io:foramt("Phase 2 timed out for coordinator~n")
+                  timeout -> case debug() of debug -> io:format("Phase 2 timed out for coordinator~n"); _ -> ignore end
                end,
                lists:foreach(fun(C) -> exit(C, "commit aborted") end, Children),
-               ets:delete(TentativeRoutingTable),
                Pid ! {abort, self(), SeqNum},
-               RoutingTable;
-            _ ->
-               io:format("~n~nVery NOK~n"),
-               io:format("Phase 1 response is ~p~n", [Phase1Response]),
-               lists:foreach(fun(C) -> exit(C, "commit aborted") end, Children),
                ets:delete(TentativeRoutingTable),
-               Pid ! {abort, self(), SeqNum},
                RoutingTable
          end
    catch
@@ -152,47 +149,43 @@ start2PC(RouterName, RoutingTable, TentativeRoutingTable, From, Pid, SeqNum, Con
    try ControlFun(RouterName, TentativeRoutingTable) of
       abort ->
          % ControlFun has failed somewhere so backpropagate abort, we rely on the coordinator to signal an abort to everyone
-         io:format("~n~n      ~p: abort from ControlFun~n~n", [RouterName]),
+         case debug() of debug -> io:format("~n~n      ~p: abort from ControlFun~n~n", [RouterName]); _ -> ignore end,
          From ! {'2pcPhase1', ohGodNoNoNo, SeqNum}, % this is phase 1
-         Phase2Response = twoPhaseCommitLoop(RoutingTable, SeqNum, From, true),
+         {Phase2Response, BackProp} = twoPhaseCommitLoop(RoutingTable, SeqNum, From, true, 0),
+         case debug() of debug -> io:format("~n~n     ~p has BackProp count of ~p~n", [RouterName, BackProp]); _ -> ignore end,
+         From ! {'2pcPhase2', confirmAbort, SeqNum},
+         backpropAcks(From, BackProp, confirmAbort, SeqNum),
          case Phase2Response of
-            canCommit -> io:foramt("~n~n   Router ~p asked to commit but signaled abort~n", [RouterName]);
+            canCommit -> case debug() of debug -> io:format("~n~n   Router ~p asked to commit but signaled abort~n", [RouterName]); _ -> ignore end;
             X when X =:= timeout; X =:= mustAbort -> ignore
          end,
          ets:delete(TentativeRoutingTable),
          RoutingTable;
       Children ->  % Will also capture empty list, in which case foreach does nothing later
          From ! {'2pcPhase1', yepSoundsGood, SeqNum}, % this is phase 1
-         Phase2Response = twoPhaseCommitLoop(RoutingTable, SeqNum, From, false),
+         {Phase2Response, BackProp} = twoPhaseCommitLoop(RoutingTable, SeqNum, From, false, 0),
+         case debug() of debug -> io:format("~n~n     ~p has BackProp count of ~p~n", [RouterName, BackProp]); _ -> ignore end,
          case Phase2Response of
-            canCommit -> io:format("~n~n~p: Network signalled canCommit~n~n", [RouterName]),
-               From ! {'2pcPhase2', confirmCommit, SeqNum},
+   canCommit -> case debug() of debug -> io:format("~n~n      ~p: Network signalled canCommit~n~n", [RouterName]); _ -> ignore end,
+               backpropAcks(From, BackProp, confirmCommit, SeqNum),
                ets:delete(RoutingTable),
                TentativeRoutingTable;
-            X when X =:= timeout; X =:= mustAbort -> io:format("~n~n~p: Network signalled mustAbort~n~n", [RouterName]),
+               X when X =:= timeout; X =:= mustAbort -> case debug() of debug -> io:format("~n~n      ~p: Network signalled mustAbort~n~n", [RouterName]); _ -> ignore end,
                lists:foreach(fun(C) -> exit(C, "commit aborted") end, Children),
+               From ! {'2pcPhase2', confirmAbort, SeqNum},
+               backpropAcks(From, BackProp, confirmAbort, SeqNum),
                ets:delete(TentativeRoutingTable),
-               From ! {abort, self(), SeqNum},
-               RoutingTable;
-            _ ->
-               io:format("~n~nVery NOK~n"),
-               io:format("Phase 1 response is ~p~n", [Phase2Response]),
-               lists:foreach(fun(C) -> exit(C, "commit aborted") end, Children),
-               ets:delete(TentativeRoutingTable),
-               From ! {abort, self(), SeqNum},
                RoutingTable
          end
    catch
       _:_ ->  % ... Should catch everything
-         From ! {abort, self(), SeqNum},
+         From ! {confirmAbort, self(), SeqNum},
          ets:delete(TentativeRoutingTable),
          RoutingTable
    end.
 % % % % %
 % End Handlers
 % % % % %
-
-
 
 % % % % %
 % Helpers
@@ -201,49 +194,64 @@ broadcast(RoutingTable, Msg) ->
    % We need to filter out the NoInEdges which is stored here... Luckily the atom is knowm :)
    Hops = [Hop || [{Dest, Hop}] <- ets:match(RoutingTable, '$1'), Dest =/= '$NoInEdges'],
    Unique = lists:usort(Hops), % usort will return a unique list, since every node will broadcast we only need to send a message once to each node
-   lists:foreach(fun(Hop) ->
-      io:format("~nSending ~p to ~p~n", [Msg, Hop]),
-       Hop ! Msg
-       end, Unique).
+   lists:foreach(
+      fun(Hop) ->
+         case debug() of debug -> io:format("~nSending ~p to ~p~n", [Msg, Hop]); _ -> ignore end,
+         Hop ! Msg
+      end, Unique).
 
 
-twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail) ->
+backpropAcks(From, BackProp, Reply, SeqNum) ->
+   case BackProp of
+      0 -> From ! {'2pcPhase2', Reply, SeqNum}; % then send an ack for ourselves
+      _ ->
+         receive % Send an ack for every backprop we received in phase 1
+            {'2pcPhase2', Reply, SeqNum} ->
+               From ! {'2pcPhase2', Reply, SeqNum},
+               backpropAcks(From, BackProp - 1, Reply, SeqNum)
+         end
+   end.
+
+
+twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp) ->
    receive
       {'2pcPhase1', yepSoundsGood, CommitSeq} -> % Phase 1 back prop message
          case CommitSeq of
             SeqNum ->
-               From ! {'2pcPhase1', yepSoundsGood, SeqNum};
-            _ -> ignored
+               From ! {'2pcPhase1', yepSoundsGood, SeqNum},
+               BackProp2 = BackProp + 1;
+            _ -> BackProp2 = BackProp % different sequence, don't increment
          end,
-         twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail);
+         twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp2);
       {'2pcPhase1', ohGodNoNoNo, CommitSeq} -> % Phase 1 back prop message
          case CommitSeq of
             SeqNum ->
-               From ! {'2pcPhase1', ohGodNoNoNo, SeqNum};
-            _ -> ignored
+               From ! {'2pcPhase1', ohGodNoNoNo, SeqNum},
+               BackProp2 = BackProp + 1;
+            _ -> BackProp2 = BackProp % different sequence, don't increment
          end,
-         twoPhaseCommitLoop(RoutingTable, SeqNum, From, true);
+         twoPhaseCommitLoop(RoutingTable, SeqNum, From, true, BackProp2);
       {'2pcPhase2', canCommit, CommitSeq} -> % Phase 2 broadcast message
          case CommitSeq of
             SeqNum ->
                case MustFail of
-                  true -> io:format("~n~n      Router received canCommit, but has sent of seen an ohGodNoNoNo~n~n");
+      true -> case debug() of debug -> io:format("~n~n      Router received canCommit, but has sent of seen an ohGodNoNoNo~n~n"); _ -> ignore end;
                   _ -> ignored
                end,
                broadcast(RoutingTable, {'2pcPhase2', canCommit, SeqNum}),
-               canCommit;
+               {canCommit, BackProp};
             _ ->
-               twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail)
+               twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp)
          end;
       {'2pcPhase2', mustAbort, CommitSeq} -> % Phase 2 broadcast message
          case CommitSeq of
             SeqNum ->
                broadcast(RoutingTable, {'2pcPhase2', mustAbort, SeqNum}),
-               mustAbort;
+               {mustAbort, BackProp};
             _ ->
-               twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail)
+               twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp)
          end
-   after getTimeout() -> timeout
+   after getTimeout() -> {timeout, BackProp}
    end.
 
 
@@ -253,7 +261,7 @@ coordinateFirstPhase(RoutingTable, SeqNum) ->
    case Phase1Result of
       X when X =:= timeout; X =:= phase1Abort; X =:= phase1Commit -> ignore;
       % match and catch unexpected messages
-      X -> io:format("2PhaseCommit Coordinator received odd message -> ~p~n", [X])
+      X -> case debug() of debug -> io:format("2PhaseCommit Coordinator received odd message -> ~p~n", [X]); _ -> ignore end
    end,
    Phase1Result.
 
@@ -289,7 +297,7 @@ coordinateSecondPhase(RoutingTable, SeqNum, ExpectedReply) ->
    case Phase2Result of
       X when X =:= timeout; X =:= phase2Good -> ignore;
       % match and catch unexpected messages
-      _ -> io:format("2PhaseCommit Coordinator received odd message -> ~p~n", [Phase2Result])
+   X -> case debug() of debug -> io:format("2PhaseCommit Coordinator received odd message -> ~p~n", [X]); _ -> ignore end
    end,
    Phase2Result.
 
@@ -297,14 +305,14 @@ coordinateSecondPhase(RoutingTable, SeqNum, ExpectedReply) ->
 awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply) ->
    receive
       % ignored
-      {'2pcPhase2', 'canCommit', _} -> awaitPhase2Responses(ExpectedResponses, CurrentResponses + 1, SeqNum, ExpectedReply);
-      {'2pcPhase2', 'mustAbort', _} -> awaitPhase2Responses(ExpectedResponses, CurrentResponses + 1, SeqNum, ExpectedReply);
+      {'2pcPhase2', 'canCommit', _} -> awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply);
+      {'2pcPhase2', 'mustAbort', _} -> awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply);
       {'2pcPhase2', Reply, CommitSeq} ->
          case CommitSeq of 
             SeqNum ->
                case Reply =:= ExpectedReply of
                   true -> ignore;  % as expected
-                  false -> io:format("2nd phase received reply ~p but expected => ~p~n", [Reply, ExpectedReply])
+                  false -> case debug() of debug -> io:format("2nd phase received reply ~p but expected => ~p~n", [Reply, ExpectedReply]); _ -> ignore end
                end,
                case CurrentResponses + 1 of
                   ExpectedResponses ->
@@ -313,13 +321,14 @@ awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply)
                      awaitPhase2Responses(ExpectedResponses, CurrentResponses + 1, SeqNum, ExpectedReply)
                end;
             _ -> % not this sequence
-               io:format("Reply for sequence ~p but expected seq ~p~n", [CommitSeq, SeqNum]),
+               case debug() of debug -> io:format("Reply for sequence ~p but expected seq ~p~n", [CommitSeq, SeqNum]); _ -> ignore end,
                awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply)
          end
-   after getTimeout() -> timeout
+   %after getTimeout() -> timeout  % Phase 2 is apparently not supposed to timeout
    end.
 
-getTimeout() -> 500000.
+
+getTimeout() -> 5000.
 % % % % %
 % End Helpers
 % % % % %

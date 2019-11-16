@@ -1,6 +1,7 @@
 -module(control).
 -export([graphToNetwork/1, extendNetwork/4]).
 
+debug() -> nope. % 'debug' for debug mode, else anything
 
 graphToNetwork(Graph) ->
    Routers = ets:new(undef, [private]),
@@ -9,14 +10,14 @@ graphToNetwork(Graph) ->
    spawnRouters(Graph, InboundCount, Routers),
    % At this point every router should exist and we can send init messages
    initRouters(Graph, Routers, InboundCount),
-   % io:format("Inbound ~p~n", [ets:match(InboundCount, '$1')]),
-   % io:format("Routers ~p~n", [ets:match(Routers, '$1')]),
+   case debug() of debug -> io:format("Inbound ~p~n", [ets:match(InboundCount, '$1')]); _ -> ignore end,
+   case debug() of debug -> io:format("Routers ~p~n", [ets:match(Routers, '$1')]); _ -> ignore end,
    [FirstRouter|_] = Graph,
    {RootNode,_} = FirstRouter,
    [{_, RootPid}] = ets:lookup(Routers, RootNode),
    ets:delete(InboundCount),
    ets:delete(Routers),
-   % io:format("~n~n~n"),
+   case debug() of debug -> io:format("~n~n~n"); _ -> ignore end,
    RootPid.
 
 
@@ -33,9 +34,9 @@ spawnRouters(Graph, InboundCount, Routers) ->
 initRouters(Graph, Routers, InboundCount) ->
    lists:foreach(
       fun({RouterName, Edges}) ->
-         % io:format("Router ~p has edges ~p~n", [RouterName, Edges]),
+   case debug() of debug -> io:format("Router ~p has edges ~p~n", [RouterName, Edges]); _ -> ignore end,
          Routes = mapRoutes(Edges, Routers, [], byName),
-         % io:format("Routes: ~p ~n", [Routes]),
+   case debug() of debug -> io:format("Routes: ~p ~n", [Routes]); _ -> ignore end,
          [{_, Inbound}] = ets:lookup(InboundCount, RouterName),
          [{_, Pid}] = ets:lookup(Routers, RouterName),
          Pid ! {control, self(), self(), 0,
@@ -126,8 +127,8 @@ extendNetwork(RootPid, SeqNum, From, {NodeName, EdgeMap}) ->
       end,
    RootPid ! {control, self(), self(), SeqNum, ControlFun},
    receive
-      % Our only communication is true/false, so really we're only looking for commited/abort
-      {commited, _, _} ->
+      % Our only communication is true/false, so really we're only looking for committed/abort
+      {committed, _, _} ->
          true;
       {abort, _, _} ->
          false
