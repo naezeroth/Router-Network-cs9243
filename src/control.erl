@@ -34,7 +34,7 @@ initRouters(Graph, Routers, InboundCount) ->
    lists:foreach(
       fun({RouterName, Edges}) ->
          io:format("Router ~p has edges ~p~n", [RouterName, Edges]),
-         Routes = mapRoutes(Edges, Routers, []),
+         Routes = mapRoutes(Edges, Routers, [], byName),
          io:format("Routes: ~p ~n", [Routes]),
          [{_, Inbound}] = ets:lookup(InboundCount, RouterName),
          [{_, Pid}] = ets:lookup(Routers, RouterName),
@@ -48,8 +48,7 @@ initRouters(Graph, Routers, InboundCount) ->
 
 countDirect(Edges, InboundCount) ->
    lists:foreach(
-      fun(Edge) ->
-         {Hop, _} = Edge,
+      fun({Hop, _}) ->
          Inbound = ets:lookup(InboundCount, Hop),
          case Inbound == [] of 
             true ->
@@ -61,15 +60,75 @@ countDirect(Edges, InboundCount) ->
       end, Edges).
 
 
-mapRoutes([], _, RouteMap) ->
+% Pattern matching is fun...Maybe too much fun
+mapRoutes([], _, RouteMap, _) ->
    RouteMap;
-mapRoutes([{Hop, Dests}|T], Routers, RouteMap) ->
-   % Should this be guarded?
+mapRoutes([{Hop, Dests}|T], Routers, RouteMap, byName) ->
    [{_, Pid}] = ets:lookup(Routers, Hop),
-   % Routes = lists:map(fun(Dest) -> {Dest, Pid} end, Dests),
    Routes = [{Dest, Pid} || Dest <- Dests],
-   mapRoutes(T, Routers, RouteMap ++ Routes).
+   mapRoutes(T, Routers, RouteMap ++ Routes, byName);
+mapRoutes([{Pid, Dests}|T], _, RouteMap, byPid) ->
+   Routes = [{Dest, Pid} || Dest <- Dests],
+   mapRoutes(T, nothing, RouteMap ++ Routes, byPid).
 
 
-extendNetwork(RootPid, SeqNum, From, EdgeMap) ->
-   wip.
+% mapRoutes([], _, RouteMap) ->
+%    RouteMap;
+% mapRoutes([{Hop, Dests}|T], Routers, RouteMap) ->
+%    [{_, Pid}] = ets:lookup(Routers, Hop),
+%    Routes = [{Dest, Pid} || Dest <- Dests],
+%    mapRoutes(T, Routers, RouteMap ++ Routes).
+
+% mapRoutesPid([], RouteMap) ->
+%    RouteMap;
+% mapRoutesPid([{Pid, Dests}|T], RouteMap) ->
+%    Routes = [{Dest, Pid} || Dest <- Dests],
+%    mapRoutesPid(T, RouteMap ++ Routes).
+
+extendNetwork(RootPid, SeqNum, From, {NodeName, EdgeMap}) ->
+   Routes = mapRoutes(EdgeMap, nothing, [], byPid),
+   ControlFun =
+      fun(Name, Table) ->
+         case From of
+            Name -> % Spwan new process here
+               SpawnFun = fun() ->
+                  Pid = router:start(NodeName),
+                  Pid ! {control, self(), self(), 0,
+                     fun(_, Table2) ->
+                        ets:insert(Table2, Routes),
+                        ets:insert(Table2, {'$NoInEdges', 1}) % Only From is an inbound link
+                     end},
+                  ets:insert(Table, {NodeName, Pid}),
+                  Pid % Return Pid from SpawnFun to ControlFun
+               end,
+               try SpawnFun() of
+                  Pid -> [Pid] % Return list of spawned routers to From router
+               catch
+                  _:_ -> abort % Catch all
+               end;
+            _ -> % No process spawned, but still need to update routing table
+               % 1. Find out how to get to From, then use that same hop to get to NodeName
+               [{_, Hop}] = ets:lookup(Table, From),
+               ets:insert(Table, {NodeName, Hop}),
+               % 2. if NodeName has a link to this router, update our inocming links
+            lists:foreach(
+               fun({Pid, _}) ->
+                  MyPid = self(),
+                  case Pid of
+                     MyPid ->
+                        [{_, Inbound}] = ets:lookup(Table, '$NoInEdges'),
+                        ets:insert(Table, {'$NoInEdges', Inbound + 1});
+                     _ -> ignore
+                  end
+               end, EdgeMap),
+            [] % Return no new routers spawned
+         end
+      end,
+   RootPid ! {control, self(), self(), SeqNum, ControlFun},
+   receive
+      % Our only communication is true/false, so really we're only looking for commited/abort
+      {commited, _, _} ->
+         true;
+      {abort, _, _} ->
+         false
+   end.
