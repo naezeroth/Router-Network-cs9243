@@ -1,7 +1,7 @@
--module(concurrentTest).
+-module(modifyTest).
 -export([runTest/0]).
 
-% c(control). c(router). c(sng). c(networkTest). c(concurrentTest). concurrentTest:runTest().
+% c(control). c(router). c(sng). c(networkTest). c(modifyTest). modifyTest:runTest().
 
 %% Circular network consisting of three nodes.
 %%
@@ -55,41 +55,24 @@ runTest () ->
      true -> true
   end,
 
-  io:format ("*** Attempting concurrent mod...~n"),
+  io:format ("*** Modifying cycle...~n"),
   RedPid ! {control, self (), self (), 1,
 	    fun (Name, Table) ->
-		case Name of % This could be inconsistent... Doesn't really matter
-		  red    -> ets:insert (Table, [{white, YellowPid },{blue, YellowPid },{green, YellowPid },{orange, YellowPid },{yellow, YellowPid }]);
-		  orange -> ets:insert (Table, [{white, WhitePid  },{blue, RedPid  },{green, GreenPid  },{red, GreenPid  },{yellow, GreenPid  }]);
-		  yellow -> ets:insert (Table, [{white, OrangePid },{blue, OrangePid },{green, RedPid },{orange, OrangePid },{red, OrangePid }])
-		end,
-		[]
-      end},
-      
-  GreenPid ! {control, self (), self (), 2,
-	    fun (Name, Table) ->
-		case Name of % This could be inconsistent... Doesn't really matter
+		case Name of
 		  red    -> ets:insert (Table, [{white, BluePid },{blue, BluePid },{green, BluePid },{orange, BluePid },{yellow, BluePid}]);
-		  white  -> ets:insert (Table, [{red, BluePid    },{blue, YellowPid    },{green, RedPid    },{orange, RedPid    },{yellow, RedPid}]);
-      blue   -> ets:insert (Table, [{white, WhitePid  },{red, WhitePid  },{green, GreenPid  },{orange, GreenPid  },{yellow, GreenPid}])
-  		end,
+		  white  -> ets:insert (Table, [{red, RedPid    },{blue, RedPid    },{green, RedPid    },{orange, RedPid    },{yellow, RedPid}]);
+		  blue   -> ets:insert (Table, [{white, WhitePid  },{red, WhitePid  },{green, GreenPid  },{orange, GreenPid  },{yellow, GreenPid}]);
+		  green  -> ets:insert (Table, [{white, YellowPid   },{blue, YellowPid   },{red, YellowPid   },{orange, YellowPid   },{yellow, YellowPid}]);
+		  orange -> ets:insert (Table, [{white, GreenPid  },{blue, GreenPid  },{green, GreenPid  },{red, GreenPid  },{yellow, GreenPid}]);
+		  yellow -> ets:insert (Table, [{white, RedPid },{blue, RedPid },{green, OrangePid },{orange, OrangePid },{red, RedPid}])
+		end,
 		[]
 	    end},
 
   receive
-      {committed, RedPid, 1} -> io:format ("*** Red Committed ***~n");
-      {abort    , RedPid, 1} ->
-          io:format ("~n~n    *** Red Aborted ***~n~n")
-  after 10000              ->
-            io:format ("~n~n    *** Red Timeout ***~n~n")
-  end,
-
-  receive
-      {committed, GreenPid, 2} -> io:format ("~n~n    *** Green Committed ***~n~n");
-      {abort    , GreenPid, 2} ->
-          io:format ("~n~n    *** Green Aborted ***~n~n")
-  after 10000              ->
-            io:format ("~n~n    *** Green Timeout ***~n~n")
+      {committed, RedPid, 1} -> io:format ("*** ...done.~n");
+      {abort    , RedPid, 1} -> io:format ("*** ERROR: Re-configuration failed!~n")
+  after 10000 -> io:format ("*** ERROR: Re-configuration timed out!~n")
   end,
   
   RedPid ! {dump, self ()},
@@ -113,5 +96,6 @@ runTest () ->
       io:format ("~w~n", [Table3])
   after 5000 -> io:format ("!!! Can't obtain dump~n")
   end,
-  %% networkTest:verifyNetwork (RedPid, reverseCircularNetwork6 ()).
-  networkTest:verifyNetwork (RedPid, CGraph).
+  %% networkTest:verifyNetwork (RedPid, modifiedCircularNetwork6 ()).
+%   networkTest:verifyNetwork (RedPid, CGraph),
+  networkTest:verifyNetwork (RedPid, modifiedCircularNetwork6 ()).

@@ -1,13 +1,13 @@
--module(networkTest).
+-module(simultaneousTest).
 -export([runTest/0, verifyNetwork/2, probeNetwork/2]).
 
 %% Simple router network consisting of four nodes
 %%
 simpleNetworkGraph () ->
   [{red  , [{white, [white, green]},
-	    {blue , [blue]}]},
+       {blue , [blue]}]},
    {white, [{red, [blue]},
-	    {blue, [green, red]}]},
+       {blue, [green, red]}]},
    {blue , [{green, [white, green, red]}]},
    {green, [{red, [red, blue, white]}]}
   ].
@@ -18,7 +18,7 @@ simpleNetworkGraph () ->
 runTest () ->
 
   io:format ("*** Starting router network...~n"),
-  Graph = sng:lrg11 (),
+  Graph = simpleNetworkGraph (),
   RedPid = control:graphToNetwork (Graph),
 
   io:format ("*** Sending message red -> green...~n"),
@@ -46,7 +46,7 @@ verifyNetwork (RootPid, Graph) ->
   io:format ("*** Verifying network containing nodes: ~w~n", [NodeNames]),
   NodeMap    = ets:new (undef, [private]),
   NodeAssocs = [{Name, element (1, probeNetwork (RootPid, Name))} 
-		|| Name <- NodeNames],
+      || Name <- NodeNames],
   Undefined  = [Name || {Name, Pid} <- NodeAssocs, Pid == undef],
   if length (Undefined) /= 0 -> 
       io:format ("*** Network contains undefined node(s): ~w~n", [Undefined]);
@@ -69,8 +69,8 @@ traceNetwork (From, To, NodeMap, Graph) ->
      true ->
       io:format ("~w ", [Trace]),
       case checkTrace (To, Trace, Graph) of
-	true  -> io:format ("ok~n");
-	false -> io:format ("INCORRECT~n")
+   true  -> io:format ("ok~n");
+   false -> io:format ("INCORRECT~n")
       end
   end.
 
@@ -81,10 +81,10 @@ checkTrace (_   , []                  , Graph) -> false;
 checkTrace (Dest, [Node]              , Graph) -> Dest == Node;
 checkTrace (Dest, [Node, Next | Nodes], Graph) ->
   Edges = case [Edges || {GNode, Edges} <- Graph, GNode == Node] of
-	    [Res] -> Res;
-	    []    -> exit ("checkTrace: Missing graph node");
-	    _     -> exit ("checkTrace: Duplicate graph nodes")
-	  end,
+       [Res] -> Res;
+       []    -> exit ("checkTrace: Missing graph node");
+       _     -> exit ("checkTrace: Duplicate graph nodes")
+     end,
   case [EdgeDest || {EdgeDest, Label} <- Edges, lists:member (Dest, Label)] of
     [EdgeDest] when EdgeDest == Next ->         % next node ok in graph
       checkTrace (Dest, [Next | Nodes], Graph);
@@ -108,4 +108,4 @@ probeNetwork (RootPid, Node) ->
 
 %% Timeout value
 %%
-timeout () -> 5000.	% 5s
+timeout () -> 5000.  % 5s
