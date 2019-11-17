@@ -7,9 +7,10 @@ graphToNetwork(Graph) ->
    Routers = ets:new(undef, [private]),
    InboundCount = ets:new(undef, [private]),
    % create and count procs
-   spawnRouters(Graph, InboundCount, Routers),
+   Spawned = spawnRouters(Graph, InboundCount, Routers),
    % At this point every router should exist and we can send init messages
    initRouters(Graph, Routers, InboundCount),
+   GoodToGo = confirmInitialized(Spawned, 0, allGood),
    case debug() of debug -> io:format("Inbound ~p~n", [ets:match(InboundCount, '$1')]); _ -> ignore end,
    case debug() of debug -> io:format("Routers ~p~n", [ets:match(Routers, '$1')]); _ -> ignore end,
    [FirstRouter|_] = Graph,
@@ -18,7 +19,11 @@ graphToNetwork(Graph) ->
    ets:delete(InboundCount),
    ets:delete(Routers),
    case debug() of debug -> io:format("~n~n~n"); _ -> ignore end,
-   RootPid.
+   io:format("~p~n", [GoodToGo]),
+   case GoodToGo of
+      allGood -> RootPid;
+      _ -> failed
+   end.
 
 
 spawnRouters(Graph, InboundCount, Routers) ->
@@ -28,23 +33,41 @@ spawnRouters(Graph, InboundCount, Routers) ->
          ets:insert(Routers, {RouterName, Pid}),
          % Counting direct connections of routers will give the incoming edges
          countDirect(Edges, InboundCount)
-      end, Graph).
+      end, Graph),
+      length(Graph).
 
 
 initRouters(Graph, Routers, InboundCount) ->
    lists:foreach(
       fun({RouterName, Edges}) ->
-   case debug() of debug -> io:format("Router ~p has edges ~p~n", [RouterName, Edges]); _ -> ignore end,
+         case debug() of debug -> io:format("Router ~p has edges ~p~n", [RouterName, Edges]); _ -> ignore end,
          Routes = mapRoutes(Edges, Routers, [], byName),
-   case debug() of debug -> io:format("Routes: ~p ~n", [Routes]); _ -> ignore end,
+         case debug() of debug -> io:format("Routes: ~p ~n", [Routes]); _ -> ignore end,
          [{_, Inbound}] = ets:lookup(InboundCount, RouterName),
          [{_, Pid}] = ets:lookup(Routers, RouterName),
          Pid ! {control, self(), self(), 0,
             fun(_, Table) ->
                ets:insert(Table, Routes),
-               ets:insert(Table, {'$NoInEdges', Inbound})
+               ets:insert(Table, {'$NoInEdges', Inbound}),
+               []
             end}
       end, Graph).
+
+
+confirmInitialized(ExpectedResponses, CurrentResponses, MyReturn)->
+   receive
+      {committed, _, 0} ->
+         case CurrentResponses + 1 of
+            ExpectedResponses -> MyReturn;
+            _ -> confirmInitialized(ExpectedResponses, CurrentResponses + 1, MyReturn)
+         end;
+      {abort, _, 0} ->
+            case CurrentResponses + 1 of
+               ExpectedResponses -> ohNoNoNO;
+               _ -> confirmInitialized(ExpectedResponses, CurrentResponses + 1, ohNoNoNO)
+            end
+   after 1000 -> io:format("Control timeout ~p => ~p~n", [CurrentResponses, ExpectedResponses])
+   end.
 
 
 countDirect(Edges, InboundCount) ->
@@ -72,29 +95,16 @@ mapRoutes([{Pid, Dests}|T], _, RouteMap, byPid) ->
    Routes = [{Dest, Pid} || Dest <- Dests],
    mapRoutes(T, nothing, RouteMap ++ Routes, byPid).
 
-
-% mapRoutes([], _, RouteMap) ->
-%    RouteMap;
-% mapRoutes([{Hop, Dests}|T], Routers, RouteMap) ->
-%    [{_, Pid}] = ets:lookup(Routers, Hop),
-%    Routes = [{Dest, Pid} || Dest <- Dests],
-%    mapRoutes(T, Routers, RouteMap ++ Routes).
-
-% mapRoutesPid([], RouteMap) ->
-%    RouteMap;
-% mapRoutesPid([{Pid, Dests}|T], RouteMap) ->
-%    Routes = [{Dest, Pid} || Dest <- Dests],
-%    mapRoutesPid(T, RouteMap ++ Routes).
-
 extendNetwork(RootPid, SeqNum, From, {NodeName, EdgeMap}) ->
    Routes = mapRoutes(EdgeMap, nothing, [], byPid),
+   ControlPid = self(),
    ControlFun =
       fun(Name, Table) ->
          case From of
             Name -> % Spwan new process here
                SpawnFun = fun() ->
                   Pid = router:start(NodeName),
-                  Pid ! {control, self(), self(), 0,
+                  Pid ! {control, self(), ControlPid, 0,
                      fun(_, Table2) ->
                         ets:insert(Table2, Routes),
                         ets:insert(Table2, {'$NoInEdges', 1}) % Only From is an inbound link
@@ -127,8 +137,19 @@ extendNetwork(RootPid, SeqNum, From, {NodeName, EdgeMap}) ->
       end,
    RootPid ! {control, self(), self(), SeqNum, ControlFun},
    receive
+      % Trap the committed response of the new node
+      {committed, _, 0} ->
+         io:format("Received commit in extend~n"),
+         ok;
+      {abort, _, 0} ->
+         ok
+   after 100 -> ok
+   end,
+
+   receive
       % Our only communication is true/false, so really we're only looking for committed/abort
-      {committed, _, _} ->
+      {committed, _, SeqNum2} ->
+            io:format("Received commit in extend for seq ~p~n", [SeqNum2]),
          true;
       {abort, _, _} ->
          false
