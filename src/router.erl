@@ -22,7 +22,6 @@ loop (RouterName, RoutingTable, OtherTable) ->
          handleMessage(RouterName, RoutingTable, Dest, From, Pid, Trace),
          loop(RouterName, RoutingTable, OtherTable);
       {control, From, Pid, SeqNum, ControlFun} -> % From =:= Pid => from controller
-         % Pattern matching calls correct function partial when From =:= Pid and when SeqNum =:= 0
          NewRoutingTable = handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun),
          loop(RouterName, NewRoutingTable, OtherTable);
       {dump, From} ->
@@ -43,7 +42,7 @@ loop (RouterName, RoutingTable, OtherTable) ->
 % % % % %
 handleDump(RoutingTable, From) ->
    Dump = ets:match(RoutingTable, '$1'),
-case debug() of debug -> io:format("Taking a dump ~p~n", [Dump]); _ -> ignore end,
+   case debug() of debug -> io:format("Taking a dump ~p~n", [Dump]); _ -> ignore end,
    From ! {table, self(), Dump}.
 
 
@@ -72,8 +71,8 @@ handleMessage(RouterName, RoutingTable, Dest, _, Pid, Trace) ->
 
 
 handleControl(RouterName, RoutingTable, OtherTable, _, _, 0, ControlFun) ->
-   % init
-   _ = ControlFun(RouterName, RoutingTable), % Initialization shouldn't have any reason to fail, or have created any new nodes
+    % Initialization shouldn't have any reason to fail, or have created any new nodes
+   _ = ControlFun(RouterName, RoutingTable),
    ets:insert(OtherTable, {executed, [0]}),
    RoutingTable;
 handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFun) ->
@@ -84,7 +83,7 @@ handleControl(RouterName, RoutingTable, OtherTable, From, Pid, SeqNum, ControlFu
       true ->
          RoutingTable;  % Sequence number already executed
       false ->
-         ets:insert(OtherTable, {executed, [SeqNum|Guard]}),
+         ets:insert(OtherTable, {executed, [SeqNum|Executed]}),
          TentativeRoutingTable = ets:new(undef,[private]),
          % ets:match returns a a list of lists or tuples, we flatten it to get a list of tuples which we can insert in one go
          Dump = lists:flatten(ets:match(RoutingTable, '$1')),
@@ -235,7 +234,7 @@ twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp) ->
          case CommitSeq of
             SeqNum ->
                case MustFail of
-      true -> case debug() of debug -> io:format("~n~n      Router received canCommit, but has sent of seen an ohGodNoNoNo~n~n"); _ -> ignore end;
+            true -> case debug() of debug -> io:format("~n~n      Router received canCommit, but has sent of seen an ohGodNoNoNo~n~n"); _ -> ignore end;
                   _ -> ignored
                end,
                broadcast(RoutingTable, {'2pcPhase2', canCommit, SeqNum}),
@@ -250,7 +249,15 @@ twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp) ->
                {mustAbort, BackProp};
             _ ->
                twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp)
-         end
+         end;
+         {control, From2, _, SeqNum2, _} ->
+            case SeqNum2 of 
+               SeqNum -> % Control for this sequence has been sent twice, this is fine, just swallow it
+                  twoPhaseCommitLoop(RoutingTable, SeqNum, From, MustFail, BackProp);
+               _ -> % Control is for a different sequence... During this sequence... Abort both!!!
+                  From ! {'2pcPhase1', ohGodNoNoNo, SeqNum},
+                  From2 ! {'2pcPhase1', ohGodNoNoNo, SeqNum2}
+            end
    after getTimeout() -> {timeout, BackProp}
    end.
 
@@ -286,6 +293,13 @@ awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum) ->
                phase1Abort;
             _ -> % not this sequence
                awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum)
+         end;
+      {control, From2, _, SeqNum2, _} ->
+         case SeqNum2 of 
+            SeqNum -> awaitPhase1Responses(ExpectedResponses, CurrentResponses, SeqNum); % Control for this sequence has been seen twice, this is fine, just swallow it
+            _ -> % Control is for a different sequence... During this sequence... Abort both!!!
+               From2 ! {'2pcPhase1', ohGodNoNoNo, SeqNum2},
+               phase1Abort
          end
    after getTimeout() -> timeout
    end.
@@ -324,7 +338,9 @@ awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply)
                case debug() of debug -> io:format("Reply for sequence ~p but expected seq ~p~n", [CommitSeq, SeqNum]); _ -> ignore end,
                awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply)
          end
-   %after getTimeout() -> timeout  % Phase 2 is apparently not supposed to timeout
+   after getTimeout() ->  % Phase 2 is apparently not supposed to timeout
+      case debug() of debug -> io:format("~n~n     Controller timed out in 2nd phase of 2PC~n"); _ -> ignore end,
+      awaitPhase2Responses(ExpectedResponses, CurrentResponses, SeqNum, ExpectedReply)
    end.
 
 
