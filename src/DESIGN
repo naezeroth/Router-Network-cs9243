@@ -1,0 +1,43 @@
+Design
+
+1. Provide an exact description of the algorithm and protocol (including the format of the various messages and their semantics) used to implement two-phase commit.
+	2 Phase Commit
+		1. Root node will receive {control, From, Pid, SeqNum} from the controller
+		2. If it has seen this message it won't be broadcast into the network
+		3. Other nodes will receive the same message, coordinator is differentation by From == Pid in the message
+		4. Each node who receives the broadcast will mark the sequence number and apply ControlFun to a copy of it's RoutingTable, if they fail they will note that the network must fail.
+		5. Each node will expect a {2pcPhase1, canCommit/mustAbort, From} message from everyone it has an outgoing edge to, once they receive N messages they will appropriately respond with canCommit/mustAbort to their parent (also considering their result for ControlFun)
+		   Nodes must get N messages for N outgoing links, nodes will auto broadcast canCommit to every node except the first one they received a control broadcast from. This allows subsequent nodes to properly evaluate canCommit/mustAbort for themselves. The node will then correctly respond canCommit/mustAbort to the first parent
+		   as only one mustAbort is needed to abort a request, this is sufficient to ensure the protocol runs correctly
+		6. Once the root node receives N messages, it will broadcast {2pcPhase2, commitChange/abortChange, SeqNum, From} into the network. At this point the network is committed to the change and cannot fail.
+		   With this design, a root node can coordinate a network reconfiguration even if it does not know about every router in the network
+		7. Nodes will continue to broadcast this message throughout the network so that everyone sees it,  once they have broadcast the message they will apply the new new/old RoutingTable and return to routing messages
+		8. Because networks are strongly connected and can contain rings, it is possible for 2pc messages to make it into the main loop, the main loop is designed to match and reject these messages
+
+2. Provide an exact description of any extra messages you've introduced.
+	1. {'2pcPhase1', canCommit/mustAbort, SeqNum, From}
+		Phase 1 of 2PC nodes will propagate to the root whether they canCommit the change or if the network mustAbort.
+		From is passed in this message
+			Firsly: so we can abort simultanous requests (i.e. jump into the other request)
+			Secondly: A node with multiple parents will receive multiple control broadcasts. Each parent will wait for each neighbour to signal canCommit/mustAbort before replying to it's parent.
+			using From, we can respond to all but the first parent with canCommit (so they proceed normally) before responding with canCommit/mustAbort correctly to the final parent
+
+	2. {'2pcPhase2', commitChange/abortChange, SeqNum, From}
+		Phase 2 of 2PC has the coordinator broadcast to the network whether they can commit or must rollback, this message takes care of that.
+		From here is unused, as we are commited to a 2PC now and there is no need to backProp, but was added incase it was useful for anything.
+
+
+3. Describe how you handle fault cases and conflicting control requests.
+	Concurrent requests are handled by aborting both requests. Although less efficient this ensures that the network remains consistent without having to worry about complications of choosing which request to preserve, or serializing requests.
+	If 2 control requests are sent, parts of the network in each request will match the control message with a different sequence number and determine that an abort must be issued. Naturally, once 1 node aborts every node will have to abort.
+	Nodes try to record the sequence numbers of aborted requests they didn't participate in to filter them out in the future if they are sent to a different node however this is not guranteed by the implementation.
+	Similarly, based on how the network is structued (i.e. rings) nodes could enter a sequence that will never complete (as some nodes have aborted and marked it as ignore). In this case we rely on the timeout to resolve.
+	As routers broadcast commit/abort messages but can short circuit (not wait for all responses) when aborting, the main loop digests any remianing 2pcPhase[1/2] messages very quickly.
+	Similarly, control messages with seen SeqNum are digested by the network
+
+*** Limitations ***
+	Depending on which routers are chosen to initiate concurrent control requests, the abort may come as a result of timeout.
+	I have been unable to find a foolproof way to ensure every router is notified to abort every control request without needing an extremely verbose "shotgun" abort broadcast.
+	I believe this is because not every node is marking every control as "seen" in the case of concurrent modifications and can receive a control for the "other" modifcation in the case of a ring that won't be picked up until it returns to the main loop
+
+	Similarly, I noticed that it was possible to crash the network when extending of an extended node depending on which node coordinated the 2nd extend request (an odd case I was not able to track down in time)
