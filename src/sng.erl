@@ -1,5 +1,5 @@
 -module(sng).
--export([sml4/0, med6/0, med6r/0, lrg11/0]).
+-export([sml4/0, med6/0, med6r/0, lrg11/0, trie7/0]).
 
 sml4 () ->
   [{red, [{white, [white, green]},
@@ -41,3 +41,13 @@ lrg11 () ->
    {grey   , [{white, [red, blue, green, orange, magenta, yellow, cyan, black, white, sepia]}]},
    {sepia  , [{red, [red, blue, green, orange, magenta, yellow, cyan, black, white, grey]}]}
   ].
+
+trie7 () ->
+    [{red   , [{blue, [blue, white, green]}, {yellow, [yellow, magenta, orange]}]},
+    {blue   , [{white, [white]}, {green, [red, yellow, green, magenta, orange]}]},
+    {yellow , [{magenta, [magenta]}, {green, [red, blue, white, green, orange]}]},
+    {white  , [{orange, [red, blue, yellow, green, magenta, orange]}]},
+    {green  , [{orange, [red, blue, yellow, white, magenta, orange]}]},
+    {magenta, [{orange, [red, blue, yellow, white, green, orange]}]},
+    {orange , [{red, [red, blue, yellow, white, green, magenta]}]}
+   ].
